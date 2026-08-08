@@ -75,6 +75,475 @@ describe('theme', async () => {
     `)
   })
 
+  test('plugin hooks can be registered and receive payloads', async () => {
+    let addUtilitiesPayloads: Array<unknown> = []
+    let themePayloads: Array<unknown> = []
+
+    await compileCss(
+      css`
+        @tailwind utilities;
+        @plugin "my-plugin";
+      `,
+      {
+        loadModule: async (_id, base) => {
+          return {
+            path: '',
+            base,
+            module: plugin(function ({ on, addUtilities, theme }) {
+              on('addUtilities', (payload) => addUtilitiesPayloads.push(payload))
+              on('theme', (payload) => themePayloads.push(payload))
+
+              addUtilities({ '.foo': { color: theme('colors.red.500', 'red') } })
+            }),
+          }
+        },
+      },
+    )
+
+    expect(addUtilitiesPayloads).toHaveLength(1)
+    expect(addUtilitiesPayloads[0]).toMatchObject({
+      utilities: { '.foo': { color: 'red' } },
+      options: undefined,
+    })
+    expect(themePayloads).toHaveLength(1)
+    expect(themePayloads[0]).toMatchObject({
+      path: 'colors.red.500',
+      defaultValue: 'red',
+    })
+  })
+
+  test('plugin hooks receive variant, prefix, utilityCandidate, and escapeClassName payloads', async () => {
+    let variantPayloads: Array<unknown> = []
+    let prefixPayloads: Array<unknown> = []
+    let utilityCandidatePayloads: Array<any> = []
+    let escapePayloads: Array<unknown> = []
+
+    await run(
+      ['my-btn', 'btn-primary'],
+      css`
+        @tailwind utilities;
+        @plugin "my-plugin";
+      `,
+      {
+        loadModule: async (_id, base) => {
+          return {
+            path: '',
+            base,
+            module: plugin(function ({
+              on,
+              addBase,
+              addUtilities,
+              matchUtilities,
+              addVariant,
+              prefix,
+            }) {
+              on('addVariant', (payload) => variantPayloads.push(payload))
+              on('prefix', (payload) => prefixPayloads.push(payload))
+              on('utilityCandidate', (payload) => utilityCandidatePayloads.push(payload))
+              on('escapeClassName', (payload) => escapePayloads.push(payload))
+
+              addVariant('my', '&:hover')
+              addBase({ '.btn': { color: 'red' } })
+              matchUtilities(
+                { btn: (value) => ({ color: value }) },
+                { values: { primary: 'blue' } },
+              )
+
+              expect(prefix('btn')).toBe('btn')
+              addUtilities({ '.btn-primary': { color: 'green' } })
+            }),
+          }
+        },
+      },
+    )
+
+    expect(variantPayloads).toHaveLength(1)
+    expect(variantPayloads[0]).toMatchObject({
+      name: 'my',
+      variant: '&:hover',
+    })
+    expect(prefixPayloads).toHaveLength(1)
+    expect(prefixPayloads[0]).toMatchObject({
+      className: 'btn',
+    })
+    expect(utilityCandidatePayloads.length).toBeGreaterThanOrEqual(1)
+    expect(utilityCandidatePayloads[0]).toMatchObject({
+      name: 'btn',
+      value: 'blue',
+      modifier: null,
+      negative: false,
+    })
+    expect(utilityCandidatePayloads[0]).toHaveProperty('candidate')
+    expect(utilityCandidatePayloads[0]).toHaveProperty('ast')
+    expect(Array.isArray(utilityCandidatePayloads[0].ast)).toBe(true)
+    expect(escapePayloads.length).toBeGreaterThanOrEqual(1)
+    expect(escapePayloads[0]).toMatchObject({
+      raw: 'btn-primary',
+      escaped: 'btn-primary',
+    })
+  })
+
+  test('plugin hooks receive variantCandidate payloads', async () => {
+    let variantCandidatePayloads: Array<unknown> = []
+
+    await run(
+      ['foo-primary:bar'],
+      css`
+        @tailwind utilities;
+        @plugin "my-plugin";
+      `,
+      {
+        loadModule: async (_id, base) => {
+          return {
+            path: '',
+            base,
+            module: plugin(function ({ on, addUtilities, matchVariant }) {
+              on('variantCandidate', (payload) => variantCandidatePayloads.push(payload))
+              addUtilities({ '.bar': { color: 'red' } })
+              matchVariant('foo', (value) => `&:${value}`, { values: { primary: 'primary' } })
+            }),
+          }
+        },
+      },
+    )
+
+    expect(variantCandidatePayloads).toHaveLength(1)
+    expect(variantCandidatePayloads[0]).toMatchObject({
+      name: 'foo',
+      raw: 'foo-primary',
+      value: 'primary',
+      modifier: null,
+    })
+  })
+
+  test('escapeClassName receives raw candidate values for arbitrary utilities', async () => {
+    let escapePayloads: Array<unknown> = []
+
+    await run(
+      ['foo-[bar/baz]'],
+      css`
+        @tailwind utilities;
+        @plugin "my-plugin";
+      `,
+      {
+        loadModule: async (_id, base) => {
+          return {
+            path: '',
+            base,
+            module: plugin(function ({ on, matchUtilities }) {
+              on('escapeClassName', (payload) => escapePayloads.push(payload))
+              matchUtilities({ foo: (value) => ({ color: value }) }, { values: {} })
+            }),
+          }
+        },
+      },
+    )
+
+    expect(escapePayloads).toHaveLength(1)
+    expect(escapePayloads[0]).toMatchObject({
+      raw: 'foo-[bar/baz]',
+      escaped: 'foo-\\[bar\\/baz\\]',
+    })
+  })
+
+  test('plugin hooks receive addBase and config payloads', async () => {
+    let addBasePayloads: Array<any> = []
+    let configPayloads: Array<unknown> = []
+
+    await compileCss(
+      css`
+        @tailwind utilities;
+        @plugin "my-plugin";
+      `,
+      {
+        loadModule: async (_id, base) => {
+          return {
+            path: '',
+            base,
+            module: plugin(function ({ on, addBase, config }) {
+              on('addBase', (payload) => addBasePayloads.push(payload))
+              on('config', (payload) => configPayloads.push(payload))
+
+              addBase({ '.foo': { '--prefix': config('prefix', 'tw-') } })
+            }),
+          }
+        },
+      },
+    )
+
+    expect(addBasePayloads).toHaveLength(1)
+    expect(addBasePayloads[0]).toMatchObject({
+      base: { '.foo': { '--prefix': '' } },
+    })
+    expect(Array.isArray(addBasePayloads[0].ast)).toBe(true)
+
+    // The hooks map is shared across all plugins in the compilation
+    // pipeline, so the user's `on('config')` listener may also receive
+    // config calls from internal plugins like darkModePlugin.
+    expect(configPayloads.length).toBeGreaterThanOrEqual(1)
+    expect(configPayloads[0]).toMatchObject({
+      path: 'prefix',
+      defaultValue: 'tw-',
+    })
+  })
+
+  test.each([
+    [
+      '@keyframes spin',
+      {
+        '0%': { transform: 'rotate(0deg)' },
+        '100%': { transform: 'rotate(360deg)' },
+      },
+      'keyframes',
+      'spin',
+    ],
+    ['@layer utilities', { '.foo': { color: 'red' } }, 'layer', 'utilities'],
+    ['@media (min-width: 640px)', { '.foo': { color: 'red' } }, 'media', '(min-width: 640px)'],
+  ])(
+    'plugin hooks receive addAtRule payloads for %s',
+    async (atRule, cssValue, expectedName, expectedParams) => {
+      let atRulePayloads: Array<any> = []
+
+      await compileCss(
+        css`
+          @tailwind utilities;
+          @plugin "my-plugin";
+        `,
+        {
+          loadModule: async (_id, base) => {
+            return {
+              path: '',
+              base,
+              module: plugin(function ({ on, addUtilities }) {
+                on('addAtRule', (payload) => atRulePayloads.push(payload))
+
+                addUtilities({ [atRule]: cssValue })
+              }),
+            }
+          },
+        },
+      )
+
+      expect(atRulePayloads).toHaveLength(1)
+      expect(atRulePayloads[0]).toMatchObject({
+        name: expectedName,
+        params: expectedParams,
+      })
+      expect(Array.isArray(atRulePayloads[0].ast)).toBe(true)
+    },
+  )
+
+  test('variantCandidate raw payload includes arbitrary variant source', async () => {
+    let variantCandidatePayloads: Array<unknown> = []
+
+    await run(
+      ['foo-[test]:flex'],
+      css`
+        @tailwind utilities;
+        @plugin "my-plugin";
+      `,
+      {
+        loadModule: async (_id, base) => {
+          return {
+            path: '',
+            base,
+            module: plugin(function ({ on, addUtilities, matchVariant }) {
+              on('variantCandidate', (payload) => variantCandidatePayloads.push(payload))
+              addUtilities({ '.flex': { display: 'flex' } })
+              matchVariant('foo', (value) => `&:${value}`, { values: {} })
+            }),
+          }
+        },
+      },
+    )
+
+    expect(variantCandidatePayloads).toHaveLength(1)
+    expect(variantCandidatePayloads[0]).toMatchObject({
+      name: 'foo',
+      raw: 'foo-[test]',
+      value: 'test',
+      modifier: null,
+    })
+  })
+
+  test('plugin hooks receive matchVariant payload', async () => {
+    let matchVariantPayloads: Array<any> = []
+
+    await run(
+      ['foo-primary:bar'],
+      css`
+        @tailwind utilities;
+        @plugin "my-plugin";
+      `,
+      {
+        loadModule: async (_id, base) => {
+          return {
+            path: '',
+            base,
+            module: plugin(function ({ on, addUtilities, matchVariant }) {
+              on('matchVariant', (payload) => matchVariantPayloads.push(payload))
+
+              addUtilities({ '.bar': { color: 'red' } })
+              matchVariant('foo', (value) => `&:${value}`, { values: { primary: 'primary' } })
+            }),
+          }
+        },
+      },
+    )
+
+    expect(matchVariantPayloads).toHaveLength(1)
+    expect(matchVariantPayloads[0]).toMatchObject({
+      name: 'foo',
+    })
+    expect(matchVariantPayloads[0]).toHaveProperty('fn')
+    expect(typeof matchVariantPayloads[0].fn).toBe('function')
+    expect(matchVariantPayloads[0]).toMatchObject({
+      options: { values: { primary: 'primary' } },
+    })
+  })
+
+  test('plugin hooks receive matchUtilities payload', async () => {
+    let matchUtilitiesPayloads: Array<unknown> = []
+
+    await run(
+      ['btn-primary'],
+      css`
+        @tailwind utilities;
+        @plugin "my-plugin";
+      `,
+      {
+        loadModule: async (_id, base) => {
+          return {
+            path: '',
+            base,
+            module: plugin(function ({ on, matchUtilities }) {
+              on('matchUtilities', (payload) => matchUtilitiesPayloads.push(payload))
+
+              matchUtilities(
+                { btn: (value) => ({ color: value }) },
+                { values: { primary: 'blue' } },
+              )
+            }),
+          }
+        },
+      },
+    )
+
+    expect(matchUtilitiesPayloads).toHaveLength(1)
+    expect(matchUtilitiesPayloads[0]).toMatchObject({
+      utilities: { btn: expect.any(Function) },
+      options: { values: { primary: 'blue' } },
+    })
+  })
+
+  test('plugin hooks receive addComponents payload', async () => {
+    let addComponentsPayloads: Array<unknown> = []
+
+    await run(
+      ['btn'],
+      css`
+        @tailwind utilities;
+        @plugin "my-plugin";
+      `,
+      {
+        loadModule: async (_id, base) => {
+          return {
+            path: '',
+            base,
+            module: plugin(function ({ on, addComponents }) {
+              on('addComponents', (payload) => addComponentsPayloads.push(payload))
+
+              addComponents({ '.btn': { padding: '.5rem 1rem' } })
+            }),
+          }
+        },
+      },
+    )
+
+    expect(addComponentsPayloads).toHaveLength(1)
+    expect(addComponentsPayloads[0]).toMatchObject({
+      components: { '.btn': { padding: '.5rem 1rem' } },
+      options: undefined,
+    })
+  })
+
+  test('plugin hooks receive matchComponents payload', async () => {
+    let matchComponentsPayloads: Array<unknown> = []
+
+    await run(
+      ['prose-sm'],
+      css`
+        @tailwind utilities;
+        @plugin "my-plugin";
+      `,
+      {
+        loadModule: async (_id, base) => {
+          return {
+            path: '',
+            base,
+            module: plugin(function ({ on, matchComponents }) {
+              on('matchComponents', (payload) => matchComponentsPayloads.push(payload))
+
+              matchComponents(
+                { prose: (value) => ({ '--container-size': value }) },
+                { values: { sm: 'sm' } },
+              )
+            }),
+          }
+        },
+      },
+    )
+
+    expect(matchComponentsPayloads).toHaveLength(1)
+    expect(matchComponentsPayloads[0]).toMatchObject({
+      components: { prose: expect.any(Function) },
+      options: { values: { sm: 'sm' } },
+    })
+  })
+
+  test('plugin hooks receive buildComplete payload', async () => {
+    let buildCompletePayloads: Array<unknown> = []
+
+    await run(
+      ['flex', 'block'],
+      css`
+        @tailwind utilities;
+        @plugin "my-plugin";
+      `,
+      {
+        loadModule: async (_id, base) => {
+          return {
+            path: '',
+            base,
+            module: plugin(function ({ on }) {
+              on('buildComplete', (payload) => buildCompletePayloads.push(payload))
+            }),
+          }
+        },
+      },
+    )
+
+    expect(buildCompletePayloads).toHaveLength(1)
+
+    let payload = buildCompletePayloads[0] as any
+
+    // ast is an array of compiled AST nodes
+    expect(Array.isArray(payload.ast)).toBe(true)
+    expect(payload.ast.length).toBeGreaterThan(0)
+
+    // ruleMap groups entries by utility name, each with rule + recompile
+    expect(payload.ruleMap instanceof Map).toBe(true)
+    expect(payload.ruleMap.has('flex')).toBe(true)
+    expect(payload.ruleMap.has('block')).toBe(true)
+
+    let flexEntries = payload.ruleMap.get('flex')
+    expect(Array.isArray(flexEntries)).toBe(true)
+    expect(flexEntries.length).toBeGreaterThan(0)
+    expect(flexEntries[0]).toHaveProperty('node')
+    expect(flexEntries[0].node).toHaveProperty('kind', 'rule')
+    expect(typeof flexEntries[0].set).toBe('function')
+  })
+
   test('keyframes added via addUtilities are appended to the AST', async () => {
     expect(
       await compileCss(

@@ -21,39 +21,47 @@
       "style": "./index.css",
       "types": "./src/index.ts",
       "require": "./dist/lib.js",
-      "import": "./src/index.ts"
+      "import": "./dist/lib.mjs"
     },
     "./colors": {
-      "require": "./src/compat/colors.cts",
-      "import": "./src/compat/colors.ts"
+      "types": "./src/compat/colors.d.ts",
+      "require": "./dist/colors.js",
+      "import": "./dist/colors.mjs"
     },
     "./colors.js": {
-      "require": "./src/compat/colors.cts",
-      "import": "./src/compat/colors.ts"
+      "types": "./src/compat/colors.d.ts",
+      "require": "./dist/colors.js",
+      "import": "./dist/colors.mjs"
     },
     "./lib/util/flattenColorPalette": {
-      "require": "./src/compat/flatten-color-palette.cts",
-      "import": "./src/compat/flatten-color-palette.ts"
+      "types": "./src/compat/flatten-color-palette.d.ts",
+      "require": "./dist/flatten-color-palette.js",
+      "import": "./dist/flatten-color-palette.mjs"
     },
     "./lib/util/flattenColorPalette.js": {
-      "require": "./src/compat/flatten-color-palette.cts",
-      "import": "./src/compat/flatten-color-palette.ts"
+      "types": "./src/compat/flatten-color-palette.d.ts",
+      "require": "./dist/flatten-color-palette.js",
+      "import": "./dist/flatten-color-palette.mjs"
     },
     "./defaultTheme": {
-      "require": "./src/compat/default-theme.cts",
-      "import": "./src/compat/default-theme.ts"
+      "types": "./src/compat/default-theme.d.ts",
+      "require": "./dist/default-theme.js",
+      "import": "./dist/default-theme.mjs"
     },
     "./defaultTheme.js": {
-      "require": "./src/compat/default-theme.cts",
-      "import": "./src/compat/default-theme.ts"
+      "types": "./src/compat/default-theme.d.ts",
+      "require": "./dist/default-theme.js",
+      "import": "./dist/default-theme.mjs"
     },
     "./plugin": {
-      "require": "./src/plugin.cts",
-      "import": "./src/plugin.ts"
+      "types": "./src/plugin.ts",
+      "require": "./dist/plugin.js",
+      "import": "./dist/plugin.mjs"
     },
     "./plugin.js": {
-      "require": "./src/plugin.cts",
-      "import": "./src/plugin.ts"
+      "types": "./src/plugin.ts",
+      "require": "./dist/plugin.js",
+      "import": "./dist/plugin.mjs"
     },
     "./package.json": "./package.json",
     "./index.css": "./index.css",

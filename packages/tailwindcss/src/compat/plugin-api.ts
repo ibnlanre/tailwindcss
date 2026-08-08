@@ -1,7 +1,7 @@
 import type { Features } from '..'
 import { substituteAtApply } from '../apply'
-import { atRule, cloneAstNode, decl, rule, type AstNode } from '../ast'
-import type { Candidate, CandidateModifier, NamedUtilityValue } from '../candidate'
+import { atRule, cloneAstNode, decl, rule, type AstNode, type StyleRule } from '../ast'
+import type { Candidate, CandidateModifier, NamedUtilityValue, Variant } from '../candidate'
 import { substituteFunctions } from '../css-functions'
 import * as CSS from '../css-parser'
 import type { DesignSystem } from '../design-system'
@@ -35,13 +35,131 @@ export type PluginWithOptions<T> = {
 
 export type Plugin = PluginFn | PluginWithConfig | PluginWithOptions<any>
 
+export type PluginHookName =
+  | 'addBase'
+  | 'addVariant'
+  | 'matchVariant'
+  | 'addUtilities'
+  | 'matchUtilities'
+  | 'addComponents'
+  | 'matchComponents'
+  | 'theme'
+  | 'config'
+  | 'prefix'
+  | 'addAtRule'
+  | 'escapeClassName'
+  | 'variantCandidate'
+  | 'utilityCandidate'
+  | 'buildComplete'
+
+export type PluginHookPayloads = {
+  addBase: {
+    base: CssInJs
+    ast: AstNode[]
+  }
+  addVariant: {
+    name: string
+    variant: string | string[] | CssInJs
+  }
+  matchVariant: {
+    name: string
+    fn: (value: any, extra: { modifier: string | null }) => string | string[]
+    options?: {
+      values?: Record<string, any>
+      sort?(
+        a: { value: string; modifier: string | null },
+        b: { value: string; modifier: string | null },
+      ): number
+    }
+  }
+  addUtilities: {
+    utilities: Record<string, CssInJs | CssInJs[]> | Record<string, CssInJs | CssInJs[]>[]
+    options?: {}
+  }
+  matchUtilities: {
+    utilities: Record<
+      string,
+      (value: string, extra: { modifier: string | null }) => CssInJs | CssInJs[]
+    >
+    options?: Partial<{
+      type: string | string[]
+      supportsNegativeValues: boolean
+      values: Record<string, string> & {
+        __BARE_VALUE__?: (value: NamedUtilityValue) => string | undefined
+      }
+      modifiers: 'any' | Record<string, string>
+    }>
+  }
+  addComponents: {
+    components: Record<string, CssInJs> | Record<string, CssInJs>[]
+    options?: {}
+  }
+  matchComponents: {
+    components: Record<string, (value: string, extra: { modifier: string | null }) => CssInJs>
+    options?: Partial<{
+      type: string | string[]
+      supportsNegativeValues: boolean
+      values: Record<string, string> & {
+        __BARE_VALUE__?: (value: NamedUtilityValue) => string | undefined
+      }
+      modifiers: 'any' | Record<string, string>
+    }>
+  }
+  theme: {
+    path: string
+    defaultValue?: any
+  }
+  config: {
+    path?: string
+    defaultValue?: any
+  }
+  prefix: {
+    className: string
+  }
+  addAtRule: {
+    name: string
+    params: string
+    ast: AstNode[]
+  }
+  escapeClassName: {
+    raw: string
+    escaped: string
+  }
+  variantCandidate: {
+    name: string
+    variant: Variant
+    raw: string
+    value: unknown | null
+    modifier: string | null
+  }
+  utilityCandidate: {
+    name: string
+    candidate: Candidate
+    ast: AstNode[]
+    value: string | null
+    modifier: string | null
+    negative: boolean
+  }
+  buildComplete: {
+    ast: AstNode[]
+    ruleMap: Map<string, CompiledRule>
+  }
+}
+
+export type CompiledRule = Array<{
+  node: StyleRule
+  /** Replaces a matching declaration's value, or appends it if missing. */
+  set: (css: CssInJs) => void
+}>
+export type PluginHookFn<E extends PluginHookName> = (payload: PluginHookPayloads[E]) => void
+
 export type PluginAPI = {
   addBase(base: CssInJs): void
 
   addVariant(name: string, variant: string | string[] | CssInJs): void
   matchVariant<T = string>(
     name: string,
-    cb: (value: T | string, extra: { modifier: string | null }) => string | string[],
+    fn: (value: T | string, extra: { modifier: string | null }) => string | string[],
     options?: {
       values?: Record<string, T>
       sort?(
@@ -86,9 +204,21 @@ export type PluginAPI = {
   theme(path: string, defaultValue?: any): any
   config(path?: string, defaultValue?: any): any
   prefix(className: string): string
+
+  on<E extends PluginHookName>(event: E, fn: PluginHookFn<E>): void
+  off<E extends PluginHookName>(event: E, fn: PluginHookFn<E>): void
 }
 
 const IS_VALID_UTILITY_NAME = /^[a-z@][a-zA-Z0-9/%._-]*$/
+const hooks: Map<PluginHookName, Set<PluginHookFn<PluginHookName>>> = new Map()
+
+export function emit<E extends PluginHookName>(event: E, payload: PluginHookPayloads[E]) {
+  let listeners = hooks.get(event)
+  if (!listeners) return
+  for (let listener of Array.from(listeners)) {
+    listener(payload as PluginHookPayloads[E])
+  }
+}
 
 export function buildPluginApi({
   designSystem,
@@ -105,6 +235,12 @@ export function buildPluginApi({
   referenceMode: boolean
   src: SourceLocation | undefined
 }): PluginAPI {
+  const themeFn = createThemeFn(
+    designSystem,
+    () => resolvedConfig.theme ?? {},
+    (value) => value,
+  )
+
   let api: PluginAPI = {
     addBase(css) {
       if (referenceMode) return
@@ -115,6 +251,7 @@ export function buildPluginApi({
         node.src = src
       })
       ast.push(rule)
+      emit('addBase', { base: css, ast: baseNodes })
     },
 
     addVariant(name, variant) {
@@ -157,8 +294,11 @@ export function buildPluginApi({
       else if (typeof variant === 'object') {
         designSystem.variants.fromAst(name, objectToAst(variant), designSystem)
       }
+      emit('addVariant', { name, variant })
     },
     matchVariant(name, fn, options) {
+      emit('matchVariant', { name, fn, options })
+
       function resolveVariantValue<T extends Parameters<typeof fn>[0]>(
         value: T,
         modifier: CandidateModifier | null,
@@ -166,6 +306,53 @@ export function buildPluginApi({
       ): AstNode[] {
         let resolved = fn(value, { modifier: modifier?.value ?? null })
         return parseVariantValue(resolved, nodes)
+      }
+
+      function variantToRaw(variant: Variant): string {
+        switch (variant.kind) {
+          case 'static':
+            return variant.root
+          case 'arbitrary':
+            return `[${variant.selector}]`
+          case 'functional': {
+            let valuePart = variant.value
+              ? variant.value.kind === 'named'
+                ? `-${variant.value.value}`
+                : `-[${variant.value.value}]`
+              : ''
+            let modifierPart = variant.modifier
+              ? `/${variant.modifier.kind === 'named' ? variant.modifier.value : `[${variant.modifier.value}]`}`
+              : ''
+            return `${variant.root}${valuePart}${modifierPart}`
+          }
+          case 'compound': {
+            let variantValue = variantToRaw(variant.variant)
+            let modifierPart = variant.modifier
+              ? `/${variant.modifier.kind === 'named' ? variant.modifier.value : `[${variant.modifier.value}]`}`
+              : ''
+            return `${variant.root}-${variantValue}${modifierPart}`
+          }
+        }
+      }
+
+      let seenVariantCandidates = new Set<string>()
+
+      function getVariantModifier(variant: Variant): string | null {
+        if (variant.kind === 'functional' || variant.kind === 'compound') {
+          return variant.modifier?.value ?? null
+        }
+        return null
+      }
+
+      function emitVariantCandidate(value: unknown, variant: Variant) {
+        let raw = variantToRaw(variant)
+        let modifier = getVariantModifier(variant)
+        let key = `${raw}|${modifier ?? ''}|${String(value)}`
+
+        if (seenVariantCandidates.has(key)) return
+        seenVariantCandidates.add(key)
+
+        emit('variantCandidate', { name, variant, raw, value, modifier })
       }
 
       try {
@@ -185,17 +372,19 @@ export function buildPluginApi({
           designSystem.variants.functional(name, (ruleNodes, variant) => {
             if (!variant.value) {
               if (options?.values && 'DEFAULT' in options.values) {
-                ruleNodes.nodes = resolveVariantValue(
-                  options.values.DEFAULT,
-                  variant.modifier,
-                  ruleNodes.nodes,
-                )
+                let value = options.values.DEFAULT
+                emitVariantCandidate(value, variant)
+
+                ruleNodes.nodes = resolveVariantValue(value, variant.modifier, ruleNodes.nodes)
                 return
               }
+
+              emitVariantCandidate(null, variant)
               return null
             }
 
             if (variant.value.kind === 'arbitrary') {
+              emitVariantCandidate(variant.value.value, variant)
               ruleNodes.nodes = resolveVariantValue(
                 variant.value.value,
                 variant.modifier,
@@ -203,15 +392,19 @@ export function buildPluginApi({
               )
             } else if (variant.value.kind === 'named' && options?.values) {
               if (!Object.hasOwn(options.values, variant.value.value)) {
+                emitVariantCandidate(null, variant)
                 return null
               }
               let defaultValue = options.values[variant.value.value]
               if (typeof defaultValue !== 'string') {
+                emitVariantCandidate(null, variant)
                 return null
               }
 
+              emitVariantCandidate(defaultValue, variant)
               ruleNodes.nodes = resolveVariantValue(defaultValue, variant.modifier, ruleNodes.nodes)
             } else {
+              emitVariantCandidate(null, variant)
               return null
             }
           })
@@ -264,6 +457,7 @@ export function buildPluginApi({
     },
 
     addUtilities(utilities) {
+      emit('addUtilities', { utilities, options: undefined })
       utilities = Array.isArray(utilities) ? utilities : [utilities]
 
       let entries = utilities.flatMap((u) => Object.entries(u))
@@ -277,13 +471,23 @@ export function buildPluginApi({
       let utils = new DefaultMap<string, AstNode[]>(() => [])
 
       for (let [name, css] of entries) {
-        if (name.startsWith('@keyframes ')) {
+        if (name.startsWith('@')) {
           if (!referenceMode) {
-            let keyframes = rule(name, objectToAst(css))
-            walk([keyframes], (node) => {
+            let ruleNodes = objectToAst(css)
+            let atRuleNode = rule(name, ruleNodes)
+            let rawName = name.slice(1)
+            let [ruleName, ...ruleParams] = rawName.split(' ')
+
+            emit('addAtRule', {
+              name: ruleName,
+              params: ruleParams.join(' '),
+              ast: ruleNodes,
+            })
+
+            walk([atRuleNode], (node) => {
               node.src = src
             })
-            ast.push(keyframes)
+            ast.push(atRuleNode)
           }
           continue
         }
@@ -355,6 +559,7 @@ export function buildPluginApi({
     },
 
     matchUtilities(utilities, options) {
+      emit('matchUtilities', { utilities, options })
       let types = options?.type
         ? Array.isArray(options?.type)
           ? options.type
@@ -473,8 +678,14 @@ export function buildPluginApi({
             }
 
             let ast = objectToAst(fn(value, { modifier }))
+
+            let escaped = escape(candidate.raw)
+            emit('escapeClassName', { raw: candidate.raw, escaped })
+
             replaceNestedClassNameReferences(ast, name, candidate.raw)
             featuresRef.current |= substituteAtApply(ast, designSystem)
+
+            emit('utilityCandidate', { name, candidate, ast, value, modifier, negative })
             return ast
           }
         }
@@ -517,20 +728,22 @@ export function buildPluginApi({
     },
 
     addComponents(components, options) {
-      this.addUtilities(components, options)
+      emit('addComponents', { components, options })
+      api.addUtilities(components, options)
     },
 
     matchComponents(components, options) {
-      this.matchUtilities(components, options)
+      emit('matchComponents', { components, options })
+      api.matchUtilities(components, options)
     },
 
-    theme: createThemeFn(
-      designSystem,
-      () => resolvedConfig.theme ?? {},
-      (value) => value,
-    ),
+    theme(path, defaultValue) {
+      emit('theme', { path, defaultValue })
+      return themeFn(path, defaultValue)
+    },
 
     prefix(className) {
+      emit('prefix', { className })
       return className
     },
 
@@ -549,13 +762,24 @@ export function buildPluginApi({
         obj = obj[key]
       }
 
-      return obj ?? defaultValue
+      let result = obj ?? defaultValue
+      emit('config', { path, defaultValue })
+      return result
+    },
+
+    on(event, fn) {
+      let listeners = hooks.get(event)
+      if (!listeners) {
+        listeners = new Set()
+        hooks.set(event, listeners)
+      }
+      listeners.add(fn as PluginHookFn<PluginHookName>)
+    },
+
+    off(event, fn) {
+      hooks.get(event)?.delete(fn as PluginHookFn<PluginHookName>)
     },
   }
-
-  // Bind these functions so they can use `this`
-  api.addComponents = api.addComponents.bind(api)
-  api.matchComponents = api.matchComponents.bind(api)
 
   return api
 }

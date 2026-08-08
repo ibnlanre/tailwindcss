@@ -1,5 +1,14 @@
-import { atRule, decl, rule, type AstNode, type Rule, type StyleRule } from './ast'
+import {
+  atRule,
+  decl,
+  rule,
+  type AstNode,
+  type Declaration,
+  type Rule,
+  type StyleRule,
+} from './ast'
 import { type Candidate, type Variant } from './candidate'
+import { emit, objectToAst, type CompiledRule, type CssInJs } from './compat/plugin-api'
 import { CompileAstFlags, type DesignSystem } from './design-system'
 import GLOBAL_PROPERTY_ORDER from './property-order'
 import { asColor, type Utility } from './utilities'
@@ -47,6 +56,9 @@ export function compileCandidates(
 
   let variantOrderMap = designSystem.getVariantOrder()
 
+  // Map of utility name → compiled entries for that utility (all variants).
+  let ruleMap = new Map<string, CompiledRule>()
+
   // Create the AST
   for (let [rawCandidate, candidates] of matches) {
     let found = false
@@ -56,6 +68,13 @@ export function compileCandidates(
       if (rules.length === 0) continue
 
       found = true
+
+      // Determine the base utility name — used as the ruleMap key so all
+      // variant forms of the same utility are grouped together.
+      let utilityName =
+        candidate.kind === 'functional' || candidate.kind === 'static'
+          ? candidate.root
+          : candidate.property
 
       for (let { node, propertySort } of rules) {
         // Track the variant order which is a number with each bit representing a
@@ -72,6 +91,20 @@ export function compileCandidates(
           candidate: rawCandidate,
         })
         astNodes.push(node)
+
+        // Group style rules by utility name so plugins can find rules
+        // without fragile selector matching.
+        if (node.kind === 'rule') {
+          let set = setDeclarations(node)
+          let entry = { node, set }
+
+          let existing = ruleMap.get(utilityName)
+          if (!existing) {
+            existing = []
+            ruleMap.set(utilityName, existing)
+          }
+          existing.push(entry)
+        }
       }
     }
 
@@ -79,6 +112,72 @@ export function compileCandidates(
       onInvalidCandidate?.(rawCandidate)
     }
   }
+
+  /**
+   * Returns whether a string is a valid CSS declaration property name.
+   *
+   * A property name is a single CSS identifier — either a regular property
+   * like `color` or `-webkit-appearance`, or a custom property starting with
+   * `--`. Names containing commas, spaces, or other separators (e.g. a
+   * mis-joined list like `--a, b-c-transition`) are invalid.
+   */
+  function isValidDeclarationProperty(property: string) {
+    return property.length > 0 && !property.includes(',') && !/\s/.test(property)
+  }
+
+  /**
+   * Converts CssInJs to an array of declarations.
+   */
+  function toDeclarations(css: CssInJs): Declaration[] {
+    return objectToAst(css).filter((node): node is Declaration => {
+      return node.kind === 'declaration' && isValidDeclarationProperty(node.property)
+    })
+  }
+
+  /**
+   * Drills through variant wrappers to find the innermost rule that can
+   * actually own declarations, then applies the given function to it.
+   */
+  function drill(node: StyleRule, callback: (node: StyleRule) => void) {
+    let children = node.nodes.filter((child): child is StyleRule => child.kind === 'rule')
+
+    if (children.length === node.nodes.length) {
+      for (let child of children) drill(child, callback)
+      return
+    }
+
+    callback(node)
+  }
+
+  /**
+   * Inserts or updates CSS declarations in a rule.
+   *
+   * Existing declarations with the same property are updated in place.
+   * Declarations for new properties are appended.
+   */
+  function setDeclarations(node: StyleRule) {
+    return (css: CssInJs) => {
+      let declarations = toDeclarations(css)
+      drill(node, (innermost) => {
+        for (let declaration of declarations) {
+          let existing = innermost.nodes.find((node): node is Declaration => {
+            return node.kind === 'declaration' && node.property === declaration.property
+          })
+
+          if (existing) {
+            existing.value = declaration.value
+            existing.important = declaration.important
+          } else {
+            innermost.nodes.push({ ...declaration })
+          }
+        }
+      })
+    }
+  }
+
+  // Fire after all candidates processed. Allows plugins to inject
+  // into the compiled AST before sorting and return.
+  emit('buildComplete', { ast: astNodes, ruleMap })
 
   astNodes.sort((a, z) => {
     // SAFETY: At this point it is safe to use TypeScript's non-null assertion
